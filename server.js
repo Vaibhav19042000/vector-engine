@@ -2,15 +2,36 @@ const { InferenceClient } = require("@huggingface/inference");
 const express = require("express");
 const { connect } = require("./db");
 const app = express();
+const serverless = require('serverless-http')
+const {ObjectId} = require('mongodb')
 
-app.use(express.json());
+app.use((req, res, next) => {
+  const contentType = req.headers["content-type"] || "";
+
+  if (contentType.includes("application/json")) {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => {
+      try {
+        req.body = JSON.parse(data);
+        next();
+      } catch (e) {
+        console.error("JSON parse error:", e);
+        res.status(400).send("Invalid JSON");
+      }
+    });
+  } else {
+    express.json()(req, res, next);
+  }
+});
 
 const client = new InferenceClient(process.env.HF_API_KEY);
 
 let db;
-(async () => {
-  db = await connect();
-})();
+
+async function initDb() {
+  if(!db) db = await connect();
+}
 
 // get bert embedding for text
 async function getEmbedding(text) {
@@ -52,8 +73,20 @@ function cosineSimilarity(vecA, vecB) {
 }
 
 app.post("/ingest", async (req, res) => {
-  const { text, metadata } = req.body;
-  if (!text) return res.status(400).send("No text provided");
+  console.log("POST /ingest received");
+  console.log("Request headers:", JSON.stringify(req.headers));
+  console.log("Request body type:", typeof req.body);
+  console.log("Request body:", JSON.stringify(req.body).substring(0, 300));
+    console.log("Parsed body:", req.body); 
+
+  const { text, metadata } = req.body || {};
+  if (!text) {
+    console.error(
+      "POST /ingest error: No text provided in body:",
+      JSON.stringify(req.body)
+    );
+    return res.status(400).send("No text provided");
+  }
 
   try {
     console.log(`Ingesting document: "${text.substring(0, 50)}..."`);
@@ -178,7 +211,6 @@ app.get("/search", async (req, res) => {
 // Get document by ID
 app.get("/document/:id", async (req, res) => {
   try {
-    const { ObjectId } = require("mongodb");
     const document = await db.collection("documents").findOne({
       _id: new ObjectId(req.params.id),
     });
@@ -198,10 +230,38 @@ app.get("/document/:id", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
 
-process.on("SIGINT", async () => {
-  await client.close();
-  process.exit();
-});
+const lamdahandler = serverless(app);
+
+module.exports.handler = async(event,context)=>{
+  // Handle API Gateway format
+  console.log("Raw event:", JSON.stringify(event).substring(0, 500));
+
+  // Pre-process the event body if needed
+  if (event.body) {
+    // If body is a string, try to parse it
+    if (typeof event.body === "string") {
+      try {
+        event.body = JSON.parse(event.body);
+        console.log(
+          "Parsed string body:",
+          JSON.stringify(event.body).substring(0, 200)
+        );
+      } catch (e) {
+        // If it's not valid JSON, keep it as a string
+        console.log("Body is not valid JSON, keeping as string");
+      }
+    }
+  }
+
+  try {
+    await initDb();
+    return lamdahandler(event, context);
+  } catch (error) {
+    console.error("lamda handler error: ", error);
+    return {
+      statusCode: 500,
+      body: "Internal Server Error",
+    };
+  }
+}

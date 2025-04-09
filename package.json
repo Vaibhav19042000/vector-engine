@@ -15,6 +15,7 @@
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "mongodb": "^6.15.0",
-    "natural": "^8.0.1"
+    "natural": "^8.0.1",
+    "serverless-http": "^3.2.0"
   }
 }
